@@ -1,25 +1,22 @@
-from dotenv import load_dotenv
-import os
-
-import logging
 import asyncio
+import logging
+import os
+import re
 from typing import Dict
 
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    ConversationHandler,
-    MessageHandler,
-    filters,
-    CallbackQueryHandler,
-)
+from dotenv import load_dotenv
+from sqlalchemy.ext.asyncio import AsyncSession
+from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
+                      KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+                      Update)
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
+                          ContextTypes, ConversationHandler, MessageHandler,
+                          filters)
 
 
 load_dotenv()
 token = os.getenv('TOKEN')
-
+IS_ADMIN = True
 
 # Enable logging
 logging.basicConfig(
@@ -30,177 +27,204 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+ADMIN_AUTH = 'Вход в административную часть'
+VACANCY_FIND = 'Вакансии'
+COMPANY_FIND = 'Компании'
+COLLEAGUE_FIND = 'Коллеги'
+BACK_TO_MAIN_MENU = 'Вернуться в главное меню'
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends a message with three inline buttons attached."""
-    keyboard = [
-        [
-            InlineKeyboardButton("Вход в административную часть", callback_data="1"),
-        ],
-        [
-            InlineKeyboardButton("Поиск вакансий по ключевым и стоп словам", callback_data="2"),
-        ],
-        [
-            InlineKeyboardButton("Информация о вакансиях компании", callback_data="3"),
-            ],
-        [
-            InlineKeyboardButton("Поиск информации о коллегах", callback_data="4"),
-            ],
-    ]
+FIND_HELP_TEXT = {
+    ADMIN_AUTH: 'Введите ваш логин:',
+    VACANCY_FIND: 'Введите ключевые и стоп слова:',
+    COMPANY_FIND: 'Введите название компании:',
+    COLLEAGUE_FIND: 'Введите имя и/или фамилию коллеги:'
+}
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
+MAIN_MENU_KEYBOARD = [
+    [InlineKeyboardButton(ADMIN_AUTH, callback_data=ADMIN_AUTH)],
+    [InlineKeyboardButton(VACANCY_FIND, callback_data=VACANCY_FIND)],
+    [InlineKeyboardButton(COMPANY_FIND, callback_data=COMPANY_FIND)],
+    [InlineKeyboardButton(COLLEAGUE_FIND, callback_data=COLLEAGUE_FIND)]
+]
 
-    await update.message.reply_text("Please choose:", reply_markup=reply_markup)
+PAGE_SIZE = 10
+
+START_ROUTES, END_ROUTES, SELECTING_OPTION = range(3)
+# Callback data
+ONE, TWO, THREE, FOUR = range(4)
+
+VACANCIES_LIST = [f'механик{i}' for i in range(15)]
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Send message on `/start`."""
+    # Get user that sent /start and log his name
+    user = update.message.from_user
+    #reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD, one_time_keyboard=True)
+    # Send message with text and appended InlineKeyboard
+    await update.message.reply_text('Выберите необходимый пункт', reply_markup=reply_markup)
+    # Tell ConversationHandler that we're in state `FIRST` now
+    return SELECTING_OPTION
+    return START_ROUTES
 
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Parses the CallbackQuery and updates the message text."""
+async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Prompt same text & keyboard as `start` does but not as new message"""
+    # Get CallbackQuery from Update
     query = update.callback_query
-
     # CallbackQueries need to be answered, even if no notification to the user is needed
     # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
     await query.answer()
+    keyboard = [
+        [
+            InlineKeyboardButton("1", callback_data=str(ONE)),
+            InlineKeyboardButton("2", callback_data=str(TWO)),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Instead of sending a new message, edit the message that
+    # originated the CallbackQuery. This gives the feeling of an
+    # interactive menu.
+    await query.edit_message_text(text="Start handler, Choose a route", reply_markup=reply_markup)
+    return START_ROUTES
 
-    await query.edit_message_text(text=f"Selected option: {query.data}")
+
+async def handle_selected_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    #print(query.data)
+    if query.data == VACANCY_FIND:
+        context.user_data["choice"] = VACANCY_FIND
+        await query.message.reply_text('Введите данные для поиска:')
+        return
+    return START_ROUTES
+
+async def handle_input_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_input = update.message.text
+    filtering = list(filter(lambda x: user_input.lower() in x, VACANCIES_LIST))
+    if filtering:
+        if len(filtering) > PAGE_SIZE:
+            new_filtering = filtering[0:PAGE_SIZE]
+            keyboard = [[InlineKeyboardButton(value, callback_data=value)] for value in new_filtering]
+            keyboard.append([InlineKeyboardButton('Следующая страница', callback_data='next_page')])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(f'По вашему запросу найдено {len(filtering)} вакансий.', reply_markup=reply_markup)
+    # Здесь можно добавить логику для обработки введенных данных
+    await update.message.reply_text(f'Вы ввели: {user_input}{context.user_data["choice"]}')
+    return START_ROUTES
+    
+
+async def one(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show new choice of buttons"""
+    query = update.callback_query
+    await query.answer()
+    keyboard = [
+        [
+            InlineKeyboardButton("3", callback_data=str(THREE)),
+            InlineKeyboardButton("4", callback_data=str(FOUR)),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        text="First CallbackQueryHandler, Choose a route", reply_markup=reply_markup
+    )
+    return START_ROUTES
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays info on how to use the bot."""
-    await update.message.reply_text("Use /start to test this bot.")
+async def two(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show new choice of buttons"""
+    query = update.callback_query
+    await query.answer()
+    keyboard = [
+        [
+            InlineKeyboardButton("1", callback_data=str(ONE)),
+            InlineKeyboardButton("3", callback_data=str(THREE)),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        text="Second CallbackQueryHandler, Choose a route", reply_markup=reply_markup
+    )
+    return START_ROUTES
+
+
+async def three(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show new choice of buttons. This is the end point of the conversation."""
+    query = update.callback_query
+    print(update.message)
+    await query.answer()
+    keyboard = [
+        [
+            InlineKeyboardButton("Yes, let's do it again!", callback_data=str(ONE)),
+            InlineKeyboardButton("Nah, I've had enough ...", callback_data=str(TWO)),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        text="Third CallbackQueryHandler. Do want to start over?", reply_markup=reply_markup
+    )
+    # Transfer to conversation state `SECOND`
+    return END_ROUTES
+
+
+async def four(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show new choice of buttons"""
+    query = update.callback_query
+    await query.answer()
+    keyboard = [
+        [
+            InlineKeyboardButton("2", callback_data=str(TWO)),
+            InlineKeyboardButton("3", callback_data=str(THREE)),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        text="Fourth CallbackQueryHandler, Choose a route", reply_markup=reply_markup
+    )
+    return START_ROUTES
+
+
+async def end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Returns `ConversationHandler.END`, which tells the
+    ConversationHandler that the conversation is over.
+    """
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(text="See you next time!")
+    return ConversationHandler.END
+
+
+
 
 
 def main() -> None:
-    """Run the bot."""
-    # Create the Application and pass it your bot's token.
     application = Application.builder().token(token).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(CommandHandler("help", help_command))
-
-    # Run the bot until the user presses Ctrl-C
+    
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            SELECTING_OPTION: [
+                CallbackQueryHandler(handle_selected_button, pattern="^" + VACANCY_FIND + "$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_data)
+            ],
+            #[application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selected_button))],#[CallbackQueryHandler(handle_selected_button)],
+            START_ROUTES: [
+                CallbackQueryHandler(one, pattern="^" + ADMIN_AUTH + "$"),
+                CallbackQueryHandler(two, pattern="^" + str(TWO) + "$"),
+                CallbackQueryHandler(three, pattern="^" + str(THREE) + "$"),
+                CallbackQueryHandler(four, pattern="^" + str(FOUR) + "$"),
+            ],
+            END_ROUTES: [
+                CallbackQueryHandler(start_over, pattern="^" + str(ONE) + "$"),
+                CallbackQueryHandler(end, pattern="^" + str(TWO) + "$"),
+            ],
+        },
+        fallbacks=[CommandHandler("start", start)],
+    )
+    application.add_handler(conv_handler)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-'''
-CHOOSING, TYPING_REPLY, TYPING_CHOICE = range(3)
-
-reply_keyboard = [
-    ["Age", "Favourite colour"],
-    ["Number of siblings", "Something else..."],
-    ["Done"],
-]
-markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
-
-def facts_to_str(user_data: Dict[str, str]) -> str:
-    """Вспомогательная функция для форматирования 
-    собранной информации о пользователе."""
-    facts = [f"{key} - {value}" for key, value in user_data.items()]
-    return "\n".join(facts).join(["\n", "\n"])
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начvало разговора, просьба ввести данные."""
-    await update.message.reply_text(
-        "Hi! My name is Doctor Botter. I will hold a more complex conversation with you. "
-        "Why don't you tell me something about yourself?",
-        reply_markup=markup,
-    )
-    return CHOOSING
-
-async def regular_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запрос информации о выбранном предопределенном выборе."""
-    text = update.message.text
-    context.user_data["choice"] = text
-    await update.message.reply_text(f"Your {text.lower()}? Yes, I would love to hear about that!")
-    return TYPING_REPLY
-
-async def custom_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запрос описания пользовательской категории."""
-    await update.message.reply_text(
-        'Alright, please send me the category first, for example "Most impressive skill"'
-    )
-    return TYPING_CHOICE
-
-async def received_information(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Store info provided by user and ask for the next category."""
-    user_data = context.user_data
-    text = update.message.text
-    category = user_data["choice"]
-    user_data[category] = text
-    del user_data["choice"]
-
-    await update.message.reply_text(
-        "Neat! Just so you know, this is what you already told me:"
-        f"{facts_to_str(user_data)}You can tell me more, or change your opinion"
-        " on something.",
-        reply_markup=markup,
-    )
-    return CHOOSING
-
-async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Вывод собранной информации и завершение разговора."""
-    user_data = context.user_data
-    if "choice" in user_data:
-        del user_data["choice"]
-
-    await update.message.reply_text(
-        f"I learned these facts about you: {facts_to_str(user_data)}Until next time!",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    user_data.clear()
-    return ConversationHandler.END
-
-
-async def button(update, _):
-    query = update.callback_query
-    variant = query.data
-
-    # `CallbackQueries` требует ответа, даже если 
-    # уведомление для пользователя не требуется, в противном
-    #  случае у некоторых клиентов могут возникнуть проблемы. 
-    # смотри https://core.telegram.org/bots/api#callbackquery.
-    await query.answer()
-
-    # для версии 20.x необходимо использовать оператор await
-    # await query.answer()
-
-    await query.edit_message_text(text=f"Выбранный вариант: {variant}")
-
-
-if __name__ == "__main__":
-    application = Application.builder().token(token).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            CHOOSING: [
-                MessageHandler(
-                    filters.Regex("^(Age|Favourite colour|Number of siblings)$"), regular_choice
-                ),
-                MessageHandler(filters.Regex("^Something else...$"), custom_choice),
-            ],
-            TYPING_CHOICE: [
-                MessageHandler(
-                    filters.TEXT & ~(filters.COMMAND | filters.Regex("^Done$")), regular_choice
-                )
-            ],
-            TYPING_REPLY: [
-                MessageHandler(
-                    filters.TEXT & ~(filters.COMMAND | filters.Regex("^Done$")),
-                    received_information,
-                )
-            ],
-        },
-        fallbacks=[MessageHandler(filters.Regex("^Done$"), done)],
-    )
-    application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(conv_handler)
-    # Запуск бота.
-    application.run_polling()
-'''
