@@ -60,7 +60,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Get user that sent /start and log his name
     user = update.message.from_user
     #reply_markup = InlineKeyboardMarkup(keyboard)
-    reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD, one_time_keyboard=True)
+    reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
     # Send message with text and appended InlineKeyboard
     await update.message.reply_text('Выберите необходимый пункт', reply_markup=reply_markup)
     # Tell ConversationHandler that we're in state `FIRST` now
@@ -90,13 +90,21 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def handle_selected_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    
     query = update.callback_query
+    #print(query)
     await query.answer()
+    if query.data == BACK_TO_MAIN_MENU:
+        return ConversationHandler.END
     #print(query.data)
     if query.data == VACANCY_FIND:
         context.user_data["choice"] = VACANCY_FIND
-        await query.message.reply_text('Введите данные для поиска:')
-        return
+        keyboard = [[InlineKeyboardButton(BACK_TO_MAIN_MENU, callback_data=BACK_TO_MAIN_MENU)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text('Введите данные для поиска:', reply_markup=reply_markup)
+        
+        return SELECTING_OPTION
+    
     return START_ROUTES
 
 async def handle_input_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -107,10 +115,22 @@ async def handle_input_data(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             new_filtering = filtering[0:PAGE_SIZE]
             keyboard = [[InlineKeyboardButton(value, callback_data=value)] for value in new_filtering]
             keyboard.append([InlineKeyboardButton('Следующая страница', callback_data='next_page')])
+            keyboard.append([InlineKeyboardButton(BACK_TO_MAIN_MENU, callback_data=BACK_TO_MAIN_MENU)])
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(f'По вашему запросу найдено {len(filtering)} вакансий.', reply_markup=reply_markup)
     # Здесь можно добавить логику для обработки введенных данных
     await update.message.reply_text(f'Вы ввели: {user_input}{context.user_data["choice"]}')
+    return SELECTING_OPTION
+
+async def back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    print(query)
+    await query.answer()
+    reply_markup = InlineKeyboardMarkup(MAIN_MENU_KEYBOARD)
+    # Send message with text and appended InlineKeyboard
+    await query.message.reply_text('Выберите необходимый пункт', reply_markup=reply_markup)
+    # Tell ConversationHandler that we're in state `FIRST` now
+    return SELECTING_OPTION
     return START_ROUTES
     
 
@@ -205,8 +225,10 @@ def main() -> None:
         states={
             SELECTING_OPTION: [
                 CallbackQueryHandler(handle_selected_button, pattern="^" + VACANCY_FIND + "$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_data)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input_data),
+                CallbackQueryHandler(back_to_main_menu),
             ],
+            
             #[application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selected_button))],#[CallbackQueryHandler(handle_selected_button)],
             START_ROUTES: [
                 CallbackQueryHandler(one, pattern="^" + ADMIN_AUTH + "$"),
